@@ -1,7 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:secure_notepad/presentation/providers/auth_provider.dart';
-import 'package:secure_notepad/data/models/note_model.dart';
 import 'package:secure_notepad/presentation/screens/auth/splash_screen.dart';
 import 'package:secure_notepad/presentation/screens/auth/onboarding_screen.dart';
 import 'package:secure_notepad/presentation/screens/auth/login_screen.dart';
@@ -9,10 +8,11 @@ import 'package:secure_notepad/presentation/screens/auth/register_screen.dart';
 import 'package:secure_notepad/presentation/screens/auth/forgot_password_screen.dart';
 import 'package:secure_notepad/presentation/screens/auth/email_verify_screen.dart';
 import 'package:secure_notepad/presentation/screens/home/home_screen.dart';
-import 'package:secure_notepad/presentation/screens/editor/note_editor_screen.dart';
+import 'package:secure_notepad/presentation/screens/note_editor/note_editor_screen.dart';
 import 'package:secure_notepad/presentation/screens/search/search_screen.dart';
 import 'package:secure_notepad/presentation/screens/calendar/calendar_screen.dart';
 import 'package:secure_notepad/presentation/screens/pricing/pricing_screen.dart';
+import 'package:secure_notepad/presentation/screens/ai/ai_chat_screen.dart';
 import 'package:secure_notepad/presentation/screens/profile/profile_screen.dart';
 
 final routerProvider = Provider<GoRouter>((ref) {
@@ -90,8 +90,17 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/editor',
         builder: (context, state) {
-          final note = state.extra as NoteModel?;
-          return NoteEditorScreen(note: note);
+          String? noteId;
+          String? folderId;
+          if (state.extra is Map) {
+            final args = state.extra as Map;
+            noteId = args['noteId']?.toString();
+            folderId = args['folderId']?.toString();
+          }
+          return NoteEditorScreen(
+            noteId: noteId,
+            folderId: folderId,
+          );
         },
       ),
       GoRoute(
@@ -109,6 +118,15 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/profile',
         builder: (context, state) => const ProfileScreen(),
+      ),
+      GoRoute(
+        path: '/ai-chat',
+        builder: (context, state) {
+          final extra = state.extra as Map<String, dynamic>?;
+          return AIChatScreen(
+            initialContext: extra?['noteContent'] as String?,
+          );
+        },
       ),
     ],
   );

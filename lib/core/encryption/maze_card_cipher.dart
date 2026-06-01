@@ -1,172 +1,162 @@
+import 'dart:convert';
 import 'dart:math';
 
-/// Maze-Card Hybrid Cipher
+import 'package:flutter/foundation.dart';
+
+/// Maze-Card Cipher — hex encoding + multi-round deterministic
+/// permutation cipher.
 ///
-/// A custom bijective substitution cipher that maps all 95 printable ASCII
-/// characters (32–126) to card symbols. Key derivation uses ASCII sum of the
-/// master key to seed a deterministic PRNG for Fisher-Yates shuffle.
+/// SRS Section 7, 8.2, 10.3 compliant.
+/// Master Key is NEVER persisted — lives only in RAM.
+///
+/// Encoding: each Unicode char → 4-digit hex → each hex digit
+/// → a playing-card token (rank+suit). Space-delimited output.
 class MazeCardCipher {
-  // 95 printable ASCII chars (space through tilde)
-  static const String _printableAscii =
-      ' !"#\$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~';
-
-  // Card symbol pool (4 suits × 13 ranks + 2 jokers = 54 symbols)
-  // We use 95 symbols by combining card representations
-  static const List<String> _suits = ['♠', '♥', '♦', '♣'];
-  static const List<String> _ranks = [
-    'A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'
+  static const _hexDigits = '0123456789abcdef';
+  static const _ranks = [
+    'A', '2', '3', '4', '5', '6', '7', '8', '9', 'T',
+    'J', 'Q', 'K', 'X', 'Y', 'Z',
   ];
+  static const _suits = ['\u2660', '\u2665', '\u2666', '\u2663'];
 
-  /// Generates the full 95-element card symbol pool.
-  static List<String> _buildSymbolPool() {
-    final pool = <String>[];
-    // 4 suits × 13 ranks = 52 card symbols
-    for (final suit in _suits) {
-      for (final rank in _ranks) {
-        pool.add('$rank$suit');
-      }
+  // Forward map: hex digit → card token (e.g. 'a' → 'Q♥')
+  static final Map<String, String> _enc = _buildEncMap();
+  // Reverse map: card token → hex digit
+  static final Map<String, String> _dec = _enc.map((k, v) => MapEntry(v, k));
+
+  static Map<String, String> _buildEncMap() {
+    final map = <String, String>{};
+    for (int i = 0; i < 16; i++) {
+      final hex = _hexDigits[i];
+      final rank = _ranks[i % _ranks.length];
+      final suit = _suits[i % _suits.length];
+      map[hex] = '$rank$suit';
     }
-    // Add jokers and special symbols to reach 95
-    pool.add('🃏');
-    pool.add('🂠');
-    // Additional symbols using colored variants to reach 95
-    for (final suit in _suits) {
-      pool.add('[$suit]');
-    }
-    // Pad with bracketed rank combos
-    for (final rank in _ranks) {
-      if (pool.length >= 95) break;
-      pool.add('{$rank}');
-    }
-    // Final padding
-    while (pool.length < 95) {
-      pool.add('※${pool.length}');
-    }
-    return pool.sublist(0, 95);
+    return map;
   }
 
-  /// Derives seed and rounds from the master key.
-  /// ASCII sum → seed, rounds = (sum % 3) + 2 (gives 2–4).
-  static (int seed, int rounds) _deriveKey(String masterKey) {
-    int sum = 0;
-    for (int i = 0; i < masterKey.length; i++) {
-      sum += masterKey.codeUnitAt(i);
-    }
-    final seed = sum;
-    final rounds = (sum % 3) + 2; // 2, 3, or 4 rounds
-    return (seed, rounds);
+  // ── Key derivation (SRS §8.2) ─────────────────────────────
+
+  static ({int seed, int rounds}) _params(String key) {
+    final sum = key.codeUnits.fold(0, (int a, int b) => a + b);
+    final seed = sum % 99991;
+    final rounds = 2 + (sum % 3); // 2, 3, or 4
+    return (seed: seed, rounds: rounds);
   }
 
-  /// Seeded Fisher-Yates shuffle.
+  // ── Deterministic Fisher-Yates shuffle ─────────────────────
+
   static List<String> _shuffle(List<String> list, int seed) {
-    final result = List<String>.from(list);
-    final rng = Random(seed);
-    for (int i = result.length - 1; i > 0; i--) {
-      final j = rng.nextInt(i + 1);
-      final temp = result[i];
-      result[i] = result[j];
-      result[j] = temp;
+    final rand = Random(seed);
+    final out = List<String>.from(list);
+    for (int i = out.length - 1; i > 0; i--) {
+      final j = rand.nextInt(i + 1);
+      final tmp = out[i];
+      out[i] = out[j];
+      out[j] = tmp;
     }
-    return result;
+    return out;
   }
 
-  /// Builds the encryption mapping for a given round.
-  static Map<String, String> _buildMapping(int seed, int round) {
-    final symbols = _buildSymbolPool();
-    final shuffled = _shuffle(symbols, seed + round * 1000);
-
-    final mapping = <String, String>{};
-    for (int i = 0; i < _printableAscii.length; i++) {
-      mapping[_printableAscii[i]] = shuffled[i];
+  /// Exact mathematical inverse of [_shuffle].
+  static List<String> _unshuffle(List<String> list, int seed) {
+    final rand = Random(seed);
+    final swaps = <(int, int)>[];
+    for (int i = list.length - 1; i > 0; i--) {
+      swaps.add((i, rand.nextInt(i + 1)));
     }
-    return mapping;
+    final out = List<String>.from(list);
+    for (final (i, j) in swaps.reversed) {
+      final tmp = out[i];
+      out[i] = out[j];
+      out[j] = tmp;
+    }
+    return out;
   }
 
-  /// Builds the reverse (decryption) mapping.
-  static Map<String, String> _buildReverseMapping(int seed, int round) {
-    final symbols = _buildSymbolPool();
-    final shuffled = _shuffle(symbols, seed + round * 1000);
+  // ── Public API ─────────────────────────────────────────────
 
-    final mapping = <String, String>{};
-    for (int i = 0; i < _printableAscii.length; i++) {
-      mapping[shuffled[i]] = _printableAscii[i];
-    }
-    return mapping;
-  }
-
-  /// Encrypts plaintext using the Maze-Card cipher.
-  ///
-  /// Applies multiple rounds of substitution. Each round uses a different
-  /// mapping derived from the same master key but with round-specific seed.
+  /// Encrypt [plaintext] with [masterKey].
+  /// Returns space-delimited card tokens.
   static String encrypt(String plaintext, String masterKey) {
-    if (masterKey.isEmpty) throw ArgumentError('Master key cannot be empty');
     if (plaintext.isEmpty) return '';
+    final p = _params(masterKey);
 
-    final (seed, rounds) = _deriveKey(masterKey);
-
-    String result = plaintext;
-    for (int round = 0; round < rounds; round++) {
-      final mapping = _buildMapping(seed, round);
-      final buffer = StringBuffer();
-      for (int i = 0; i < result.length; i++) {
-        final char = result[i];
-        if (mapping.containsKey(char)) {
-          buffer.write(mapping[char]);
-        } else {
-          // Non-printable chars pass through unchanged
-          buffer.write(char);
-        }
+    // Step 1: convert each char to 4-digit hex, then to card tokens
+    final tokens = <String>[];
+    for (final codeUnit in plaintext.codeUnits) {
+      final hex = codeUnit.toRadixString(16).padLeft(4, '0');
+      for (int i = 0; i < 4; i++) {
+        tokens.add(_enc[hex[i]]!);
       }
-      result = buffer.toString();
     }
 
-    return result;
+    // Step 2: N rounds of deterministic permutation
+    var result = tokens;
+    for (int r = 0; r < p.rounds; r++) {
+      result = _shuffle(result, p.seed + r);
+    }
+
+    return result.join(' ');
   }
 
-  /// Decrypts ciphertext using the Maze-Card cipher.
-  ///
-  /// Reverses multiple rounds of substitution in reverse order.
+  /// Decrypt [ciphertext] (space-delimited card tokens) with [masterKey].
   static String decrypt(String ciphertext, String masterKey) {
-    if (masterKey.isEmpty) throw ArgumentError('Master key cannot be empty');
     if (ciphertext.isEmpty) return '';
+    final p = _params(masterKey);
 
-    final (seed, rounds) = _deriveKey(masterKey);
-
-    String result = ciphertext;
-    for (int round = rounds - 1; round >= 0; round--) {
-      final mapping = _buildReverseMapping(seed, round);
-      final buffer = StringBuffer();
-      // Each card symbol is multi-char; we need to parse them
-      int i = 0;
-      while (i < result.length) {
-        bool matched = false;
-        // Try matching longest symbols first (bracketed ones are longer)
-        for (int len = 5; len >= 1; len--) {
-          if (i + len <= result.length) {
-            final substr = result.substring(i, i + len);
-            if (mapping.containsKey(substr)) {
-              buffer.write(mapping[substr]);
-              i += len;
-              matched = true;
-              break;
-            }
-          }
-        }
-        if (!matched) {
-          buffer.write(result[i]);
-          i++;
-        }
-      }
-      result = buffer.toString();
+    // Step 1: reverse N rounds of permutation
+    var tokens = ciphertext.split(' ');
+    for (int r = p.rounds - 1; r >= 0; r--) {
+      tokens = _unshuffle(tokens, p.seed + r);
     }
 
-    return result;
+    // Step 2: card tokens → hex digits → original chars
+    final buffer = StringBuffer();
+    for (int i = 0; i < tokens.length; i += 4) {
+      if (i + 3 >= tokens.length) break;
+      final hex = StringBuffer();
+      for (int j = 0; j < 4; j++) {
+        hex.write(_dec[tokens[i + j]] ?? '0');
+      }
+      final codeUnit = int.parse(hex.toString(), radix: 16);
+      buffer.writeCharCode(codeUnit);
+    }
+
+    return buffer.toString();
   }
 
-  /// Returns a preview of what encrypted text looks like (first 50 chars).
-  static String preview(String plaintext, String masterKey) {
-    final encrypted = encrypt(plaintext, masterKey);
-    if (encrypted.length <= 50) return encrypted;
-    return '${encrypted.substring(0, 50)}...';
+  /// Validate that [result] looks like real content.
+  /// Checks for Delta JSON format first, then falls back to
+  /// printable-text heuristic for legacy plain-text notes.
+  static bool isValidDecryption(String result) {
+    if (result.trim().isEmpty) return false;
+    // Check if it's valid Delta JSON (starts with '[{')
+    try {
+      final parsed = jsonDecode(result);
+      if (parsed is List && parsed.isNotEmpty) return true;
+    } catch (_) {}
+    // Fallback: check if mostly printable text
+    final printable =
+        result.codeUnits.where((c) => c >= 32 && c <= 126).length;
+    return result.isNotEmpty && (printable / result.length) >= 0.75;
+  }
+
+  /// Self-test to verify encrypt/decrypt round-trip works correctly.
+  static bool selfTest() {
+    const testText = 'Hello World 123!';
+    const testKey = 'testpassword';
+    try {
+      final cipher = encrypt(testText, testKey);
+      final result = decrypt(cipher, testKey);
+      final passed = result == testText;
+      debugPrint(passed
+          ? 'MazeCardCipher selfTest PASSED'
+          : 'MazeCardCipher selfTest FAILED got: $result');
+      return passed;
+    } catch (e) {
+      debugPrint('MazeCardCipher selfTest ERROR: $e');
+      return false;
+    }
   }
 }

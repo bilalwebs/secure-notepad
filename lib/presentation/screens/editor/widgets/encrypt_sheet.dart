@@ -1,22 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:secure_notepad/core/theme/app_theme.dart';
-import 'package:secure_notepad/core/encryption/maze_card_cipher.dart';
 
 class EncryptSheet extends StatefulWidget {
-  final String plaintext;
-  final bool isCurrentlyEncrypted;
-  final String? currentCipherText;
-  final void Function(String encrypted, String masterKey) onEncrypt;
-  final void Function(String decrypted) onDecrypt;
+  final String mode;
+  final Future<void> Function(String key) onConfirm;
 
   const EncryptSheet({
     super.key,
-    required this.plaintext,
-    required this.isCurrentlyEncrypted,
-    this.currentCipherText,
-    required this.onEncrypt,
-    required this.onDecrypt,
+    required this.mode,
+    required this.onConfirm,
   });
 
   @override
@@ -25,73 +18,62 @@ class EncryptSheet extends StatefulWidget {
 
 class _EncryptSheetState extends State<EncryptSheet> {
   final _keyController = TextEditingController();
-  final _confirmKeyController = TextEditingController();
   bool _obscureKey = true;
-  bool _showConfirm = false;
-  String? _errorMessage;
+  bool _isLoading = false;
+
+  bool get _isEncrypt => widget.mode == 'encrypt';
+  bool get _isKeyEmpty => _keyController.text.isEmpty;
+
+  int get _strength {
+    final len = _keyController.text.length;
+    if (len == 0) return 0;
+    if (len < 4)  return 1;
+    if (len < 8)  return 2;
+    return 3;
+  }
+
+  Color get _strengthColor {
+    switch (_strength) {
+      case 1: return Colors.red;
+      case 2: return Colors.amber;
+      case 3: return const Color(0xFF2EC4A9);
+      default: return Colors.grey;
+    }
+  }
+
+  double get _strengthWidth {
+    switch (_strength) {
+      case 1: return 0.2;
+      case 2: return 0.6;
+      case 3: return 1.0;
+      default: return 0;
+    }
+  }
+
+  String get _strengthLabel {
+    switch (_strength) {
+      case 1: return 'Too short';
+      case 2: return 'Weak';
+      case 3: return 'Strong';
+      default: return '';
+    }
+  }
 
   @override
   void dispose() {
     _keyController.dispose();
-    _confirmKeyController.dispose();
     super.dispose();
   }
 
-  bool get _isKeyEmpty => _keyController.text.isEmpty;
-
-  void _handleAction() {
-    setState(() => _errorMessage = null);
-
+  Future<void> _handleConfirm() async {
     if (_isKeyEmpty) return;
+    if (_isEncrypt && _keyController.text.length < 4) return;
 
-    if (widget.isCurrentlyEncrypted) {
-      _decrypt();
-    } else {
-      if (!_showConfirm) {
-        setState(() => _showConfirm = true);
-        return;
-      }
-      _encrypt();
-    }
-  }
-
-  void _encrypt() {
-    if (_keyController.text != _confirmKeyController.text) {
-      setState(() => _errorMessage = 'Keys don\'t match');
-      return;
-    }
-
+    setState(() => _isLoading = true);
     try {
-      final encrypted =
-          MazeCardCipher.encrypt(widget.plaintext, _keyController.text);
-      widget.onEncrypt(encrypted, _keyController.text);
-      Navigator.pop(context);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('Note encrypted successfully'),
-          backgroundColor: AppTheme.primary,
-        ),
-      );
-    } catch (e) {
-      setState(() => _errorMessage = 'Encryption failed: $e');
-    }
-  }
-
-  void _decrypt() {
-    final cipherText = widget.currentCipherText ?? widget.plaintext;
-    try {
-      final decrypted =
-          MazeCardCipher.decrypt(cipherText, _keyController.text);
-      widget.onDecrypt(decrypted);
-      Navigator.pop(context);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('Note decrypted'),
-          backgroundColor: AppTheme.primary,
-        ),
-      );
-    } catch (e) {
-      setState(() => _errorMessage = 'Incorrect master key. Try again.');
+      await widget.onConfirm(_keyController.text);
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -105,12 +87,11 @@ class _EncryptSheetState extends State<EncryptSheet> {
         borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
       ),
       padding: EdgeInsets.fromLTRB(
-          20, 20, 20, MediaQuery.of(context).viewInsets.bottom + 20),
+          20, 12, 20, MediaQuery.of(context).viewInsets.bottom + 20),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ── Handle ──
           Center(
             child: Container(
               width: 40,
@@ -121,36 +102,21 @@ class _EncryptSheetState extends State<EncryptSheet> {
               ),
             ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 20),
 
-          // ── Header ──
-          Row(
-            children: [
-              Icon(
-                widget.isCurrentlyEncrypted
-                    ? Icons.lock_open_rounded
-                    : Icons.lock_rounded,
-                color: AppTheme.primary,
-                size: 24,
-              ),
-              const SizedBox(width: 10),
-              Text(
-                widget.isCurrentlyEncrypted
-                    ? 'Decrypt Note'
-                    : 'Encrypt Note',
-                style: GoogleFonts.sora(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w700,
-                  color: isDark ? AppTheme.textLight : AppTheme.textDark,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
           Text(
-            widget.isCurrentlyEncrypted
-                ? 'Enter your master key to decrypt this note.'
-                : 'Protect your note with a master key.',
+            _isEncrypt ? 'Encrypt Note' : 'Decrypt Note',
+            style: GoogleFonts.sora(
+              fontSize: 20,
+              fontWeight: FontWeight.w700,
+              color: isDark ? AppTheme.textLight : AppTheme.textDark,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            _isEncrypt
+                ? 'Lock this note with a master key'
+                : 'Enter your master key to unlock',
             style: GoogleFonts.dmSans(
               fontSize: 14,
               color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
@@ -158,10 +124,10 @@ class _EncryptSheetState extends State<EncryptSheet> {
           ),
           const SizedBox(height: 20),
 
-          // ── Master Key Input ──
           TextField(
             controller: _keyController,
             obscureText: _obscureKey,
+            autofocus: true,
             onChanged: (_) => setState(() {}),
             decoration: InputDecoration(
               labelText: 'Master Key',
@@ -170,36 +136,50 @@ class _EncryptSheetState extends State<EncryptSheet> {
                 icon: Icon(_obscureKey
                     ? Icons.visibility_off_rounded
                     : Icons.visibility_rounded),
-                onPressed: () => setState(() => _obscureKey = !_obscureKey),
+                onPressed: () =>
+                    setState(() => _obscureKey = !_obscureKey),
               ),
-              focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide(color: AppTheme.primary, width: 2),
-              ),
-              errorText: _errorMessage,
             ),
           ),
 
-          // ── Confirm Key (encrypt flow only) ──
-          if (!widget.isCurrentlyEncrypted && _showConfirm) ...[
+          if (_isEncrypt) ...[
             const SizedBox(height: 12),
-            TextField(
-              controller: _confirmKeyController,
-              obscureText: true,
-              onChanged: (_) => setState(() {}),
-              decoration: InputDecoration(
-                labelText: 'Confirm Master Key',
-                prefixIcon: const Icon(Icons.key_rounded),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide(color: AppTheme.primary, width: 2),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(
+                value: _strengthWidth,
+                minHeight: 4,
+                backgroundColor: Colors.grey.shade200,
+                valueColor:
+                    AlwaysStoppedAnimation<Color>(_strengthColor),
+              ),
+            ),
+            if (_keyController.text.isNotEmpty) ...[
+              const SizedBox(height: 4),
+              Text(
+                _strengthLabel,
+                style: GoogleFonts.dmSans(
+                  fontSize: 12,
+                  color: _strengthColor,
                 ),
+              ),
+            ],
+          ],
+
+          if (_isEncrypt &&
+              _keyController.text.isNotEmpty &&
+              _keyController.text.length < 4) ...[
+            const SizedBox(height: 8),
+            Text(
+              'Key must be at least 4 characters',
+              style: GoogleFonts.dmSans(
+                fontSize: 12,
+                color: Colors.red,
               ),
             ),
           ],
-          const SizedBox(height: 12),
 
-          // ── Info ──
+          const SizedBox(height: 16),
           Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
@@ -211,12 +191,12 @@ class _EncryptSheetState extends State<EncryptSheet> {
             ),
             child: Row(
               children: [
-                Icon(Icons.info_outline_rounded,
+                const Icon(Icons.info_outline_rounded,
                     size: 16, color: AppTheme.primary),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
-                    'Your key is never stored. You\'ll need it to decrypt.',
+                    'Your key is never stored anywhere. If lost, the note cannot be recovered.',
                     style: GoogleFonts.dmSans(
                       fontSize: 12,
                       color: isDark
@@ -230,7 +210,6 @@ class _EncryptSheetState extends State<EncryptSheet> {
           ),
           const SizedBox(height: 20),
 
-          // ── Buttons ──
           Row(
             children: [
               Expanded(
@@ -241,19 +220,20 @@ class _EncryptSheetState extends State<EncryptSheet> {
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: _isKeyEmpty ? null : _handleAction,
-                  icon: Icon(
-                    widget.isCurrentlyEncrypted
-                        ? Icons.lock_open_rounded
-                        : Icons.lock_rounded,
-                    size: 18,
-                  ),
-                  label: Text(
-                    widget.isCurrentlyEncrypted
-                        ? 'Decrypt'
-                        : (_showConfirm ? 'Encrypt' : 'Continue'),
-                  ),
+                child: ElevatedButton(
+                  onPressed: _isKeyEmpty || _isLoading
+                      ? null
+                      : _handleConfirm,
+                  child: _isLoading
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : Text(_isEncrypt ? 'Encrypt' : 'Decrypt'),
                 ),
               ),
             ],

@@ -1,213 +1,132 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:hive_flutter/hive_flutter.dart';
-import 'package:secure_notepad/data/models/note_model.dart';
-import 'package:secure_notepad/data/models/folder_model.dart';
 
 class NotesRepository {
-  final FirebaseFirestore _firestore;
-  final FirebaseAuth _auth;
-  late Box<Map> _notesCache;
+  String get _uid => FirebaseAuth.instance.currentUser!.uid;
 
-  NotesRepository({
-    FirebaseFirestore? firestore,
-    FirebaseAuth? auth,
-  })  : _firestore = firestore ?? FirebaseFirestore.instance,
-        _auth = auth ?? FirebaseAuth.instance;
+  CollectionReference get _notes => FirebaseFirestore.instance
+      .collection('users').doc(_uid).collection('notes');
 
-  String get _uid => _auth.currentUser!.uid;
+  CollectionReference get _folders => FirebaseFirestore.instance
+      .collection('users').doc(_uid).collection('folders');
 
-  CollectionReference get _notesRef =>
-      _firestore.collection('users').doc(_uid).collection('notes');
+  CollectionReference get _reminders => FirebaseFirestore.instance
+      .collection('users').doc(_uid).collection('reminders');
 
-  CollectionReference get _foldersRef =>
-      _firestore.collection('users').doc(_uid).collection('folders');
+  // ── Notes CRUD ──────────────────────────────────────────
 
-  CollectionReference get _remindersRef =>
-      _firestore.collection('users').doc(_uid).collection('reminders');
-
-  /// Initialize Hive cache.
-  Future<void> initCache() async {
-    _notesCache = await Hive.openBox<Map>('notes_cache');
+  /// Stream notes optionally filtered by folderId.
+  /// Does NOT use .orderBy() to avoid requiring a composite index.
+  /// Sorting is done client-side in the provider/home screen.
+  Stream<QuerySnapshot> notesStream({String? folderId}) {
+    Query q = _notes;
+    if (folderId != null) {
+      q = q.where('folderId', isEqualTo: folderId);
+    }
+    return q.snapshots();
   }
 
-  // ───────────────────────── Notes CRUD ─────────────────────────
-
-  /// Get all notes as a stream (real-time).
-  Stream<List<NoteModel>> getNotes() {
-    return _notesRef
+  Stream<QuerySnapshot> allNotesStream() {
+    return _notes
         .orderBy('isPinned', descending: true)
         .orderBy('updatedAt', descending: true)
-        .snapshots()
-        .map((snapshot) {
-      final notes =
-          snapshot.docs.map((doc) => NoteModel.fromFirestore(doc)).toList();
-      _cacheNotes(notes);
-      return notes;
+        .snapshots();
+  }
+
+  /// Create a brand-new note and return its document id.
+  Future<String> createNote(Map<String, dynamic> data) async {
+    final ref = await _notes.add({
+      ...data,
+      'createdAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+    return ref.id;
+  }
+
+  Future<void> updateNote(String id, Map<String, dynamic> data) async {
+    await _notes.doc(id).update({
+      ...data,
+      'updatedAt': FieldValue.serverTimestamp(),
     });
   }
 
-  /// Get notes by folder.
-  Stream<List<NoteModel>> getNotesByFolder(String folderId) {
-    return _notesRef
-        .where('folderId', isEqualTo: folderId)
-        .orderBy('updatedAt', descending: true)
-        .snapshots()
-        .map((snapshot) =>
-            snapshot.docs.map((doc) => NoteModel.fromFirestore(doc)).toList());
-  }
+  Future<void> updateNoteTitle(String id, String title) =>
+      updateNote(id, {'title': title.isEmpty ? 'Untitled' : title});
 
-  /// Get cached notes (offline).
-  List<NoteModel> getCachedNotes() {
-    return _notesCache.values.map((map) {
-      final data = Map<String, dynamic>.from(map);
-      return NoteModel(
-        id: data['id'] ?? '',
-        title: data['title'] ?? '',
-        cipherText: data['cipherText'] ?? '',
-        plainPreview: data['plainPreview'] ?? '',
-        isEncrypted: data['isEncrypted'] ?? false,
-        isVoice: data['isVoice'] ?? false,
-        audioUrl: data['audioUrl'],
-        folderId: data['folderId'],
-        tags: List<String>.from(data['tags'] ?? []),
-        createdAt:
-            (data['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
-        updatedAt:
-            (data['updatedAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
-        reminderAt: (data['reminderAt'] as Timestamp?)?.toDate(),
-        isPinned: data['isPinned'] ?? false,
-      );
-    }).toList();
-  }
+  /// Fetch a single note document by id.
+  Future<DocumentSnapshot> getNote(String id) => _notes.doc(id).get();
 
-  /// Create a new note.
-  Future<String> createNote(NoteModel note) async {
-    final docRef = await _notesRef.add(note.toFirestore());
-    if (note.folderId != null) {
-      await _updateFolderNoteCount(note.folderId!);
-    }
-    return docRef.id;
-  }
+  Future<void> deleteNote(String id) => _notes.doc(id).delete();
 
-  /// Update an existing note.
-  Future<void> updateNote(NoteModel note) async {
-    await _notesRef.doc(note.id).update(note.toFirestore());
-  }
+  Future<void> moveNoteToFolder(String id, String? folderId) =>
+      updateNote(id, {'folderId': folderId});
 
-  /// Delete a note.
-  Future<void> deleteNote(String noteId, {String? folderId}) async {
-    await _notesRef.doc(noteId).delete();
-    if (folderId != null) {
-      await _updateFolderNoteCount(folderId);
-    }
-  }
+  Future<void> togglePinNote(String id, bool pin) =>
+      updateNote(id, {'isPinned': pin});
 
-  /// Toggle pin status.
-  Future<void> togglePin(String noteId, bool isPinned) async {
-    await _notesRef.doc(noteId).update({'isPinned': isPinned});
-  }
-
-  /// Search notes by title or tags.
-  Future<List<NoteModel>> searchNotes(String query) async {
-    final lowerQuery = query.toLowerCase();
-    final snapshot = await _notesRef.get();
-    return snapshot.docs
-        .map((doc) => NoteModel.fromFirestore(doc))
-        .where((note) =>
-            note.title.toLowerCase().contains(lowerQuery) ||
-            note.tags.any((tag) => tag.toLowerCase().contains(lowerQuery)))
-        .toList();
-  }
-
-  // ───────────────────────── Folders CRUD ─────────────────────────
-
-  /// Get all folders as a stream.
-  Stream<List<FolderModel>> getFolders() {
-    return _foldersRef
-        .orderBy('createdAt', descending: true)
-        .snapshots()
-        .map((snapshot) => snapshot.docs
-            .map((doc) => FolderModel.fromFirestore(doc))
-            .toList());
-  }
-
-  /// Create a new folder.
-  Future<String> createFolder(FolderModel folder) async {
-    final docRef = await _foldersRef.add(folder.toFirestore());
-    return docRef.id;
-  }
-
-  /// Update a folder.
-  Future<void> updateFolder(FolderModel folder) async {
-    await _foldersRef.doc(folder.id).update(folder.toFirestore());
-  }
-
-  /// Delete a folder.
-  Future<void> deleteFolder(String folderId) async {
-    // Move notes out of folder first
-    final notes = await _notesRef
-        .where('folderId', isEqualTo: folderId)
-        .get();
-    for (final doc in notes.docs) {
-      await doc.reference.update({'folderId': null});
-    }
-    await _foldersRef.doc(folderId).delete();
-  }
-
-  /// Update folder note count.
-  Future<void> _updateFolderNoteCount(String folderId) async {
-    final count = await _notesRef
-        .where('folderId', isEqualTo: folderId)
-        .count()
-        .get();
-    await _foldersRef
-        .doc(folderId)
-        .update({'noteCount': count.count});
-  }
-
-  // ───────────────────────── Reminders ─────────────────────────
-
-  /// Create a reminder.
-  Future<String> createReminder({
-    required String noteId,
-    required String title,
-    required DateTime scheduledAt,
-  }) async {
-    final docRef = await _remindersRef.add({
-      'noteId': noteId,
-      'title': title,
-      'scheduledAt': Timestamp.fromDate(scheduledAt),
-      'isCompleted': false,
+  Future<void> duplicateNote(String id) async {
+    final snap = await _notes.doc(id).get();
+    if (!snap.exists) return;
+    final d = snap.data() as Map<String, dynamic>;
+    await _notes.add({
+      ...d,
+      'title': '${d['title']} (Copy)',
+      'isPinned': false,
+      'createdAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
     });
-    return docRef.id;
   }
 
-  /// Get reminders grouped by date.
-  Stream<List<QueryDocumentSnapshot>> getReminders() {
-    return _remindersRef
-        .where('isCompleted', isEqualTo: false)
-        .orderBy('scheduledAt')
-        .snapshots()
-        .map((snapshot) => snapshot.docs);
+  // ── Folders CRUD ─────────────────────────────────────────
+
+  Stream<QuerySnapshot> foldersStream() =>
+      _folders.orderBy('createdAt').snapshots();
+
+  Future<void> createFolder(
+      String name, String colorHex, String icon) async {
+    await _folders.add({
+      'name': name,
+      'colorHex': colorHex,
+      'iconName': icon,
+      'noteCount': 0,
+      'createdAt': FieldValue.serverTimestamp(),
+    });
   }
 
-  /// Mark reminder as completed.
-  Future<void> completeReminder(String reminderId) async {
-    await _remindersRef.doc(reminderId).update({'isCompleted': true});
-  }
+  Future<void> renameFolder(String id, String name) =>
+      _folders.doc(id).update({'name': name});
 
-  // ───────────────────────── Cache ─────────────────────────
+  Future<void> changeFolderColor(String id, String hex) =>
+      _folders.doc(id).update({'colorHex': hex});
 
-  void _cacheNotes(List<NoteModel> notes) {
-    // Keep only the last 50 notes in cache
-    final toCache = notes.take(50).toList();
-    _notesCache.clear();
-    for (final note in toCache) {
-      final data = note.toFirestore();
-      data['id'] = note.id;
-      _notesCache.put(note.id, data);
+  Future<void> deleteFolderKeepNotes(String id) async {
+    final snaps = await _notes.where('folderId', isEqualTo: id).get();
+    for (final d in snaps.docs) {
+      await d.reference.update({'folderId': null});
     }
+    await _folders.doc(id).delete();
   }
+
+  Future<void> deleteFolderAndNotes(String id) async {
+    final snaps = await _notes.where('folderId', isEqualTo: id).get();
+    for (final d in snaps.docs) {
+      await d.reference.delete();
+    }
+    await _folders.doc(id).delete();
+  }
+
+  // ── Reminders CRUD ───────────────────────────────────────
+
+  Stream<QuerySnapshot> remindersStream() =>
+      _reminders.orderBy('scheduledAt').snapshots();
+
+  Future<DocumentReference> addReminder(
+      Map<String, dynamic> data) => _reminders.add(data);
+
+  Future<void> updateReminder(
+      String id, Map<String, dynamic> data) =>
+      _reminders.doc(id).update(data);
+
+  Future<void> deleteReminder(String id) =>
+      _reminders.doc(id).delete();
 }
-

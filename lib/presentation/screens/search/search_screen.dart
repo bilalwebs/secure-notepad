@@ -40,14 +40,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
     super.dispose();
   }
 
-  void _onSearch(String query) {
-    if (query.trim().isEmpty) return;
-    ref.read(notesProvider.notifier).search(query.trim());
-    _saveRecentSearch(query.trim());
-  }
-
   Future<void> _saveRecentSearch(String query) async {
-    // Remove duplicates
     _recentSearchBox.values
         .where((q) => q == query)
         .toList()
@@ -57,7 +50,6 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
       if (key != null) _recentSearchBox.delete(key);
     });
     await _recentSearchBox.add(query);
-    // Keep only last 10
     if (_recentSearchBox.length > 10) {
       await _recentSearchBox.deleteAt(0);
     }
@@ -69,6 +61,15 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
   Future<void> _clearRecentSearches() async {
     await _recentSearchBox.clear();
     setState(() => _recentSearches = []);
+  }
+
+  List<NoteModel> _search(List<NoteModel> notes, String query) {
+    final q = query.toLowerCase();
+    return notes.where((n) {
+      return n.title.toLowerCase().contains(q) ||
+          n.plainPreview.toLowerCase().contains(q) ||
+          n.tags.any((t) => t.toLowerCase().contains(q));
+    }).toList();
   }
 
   List<NoteModel> _applyFilter(List<NoteModel> notes) {
@@ -86,16 +87,28 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final notesState = ref.watch(notesProvider);
+    final notesAsync = ref.watch(notesStreamProvider);
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final searchResults = notesState.searchResults ?? [];
+    final query = _searchController.text.trim();
+
+    final allNotes = notesAsync.when(
+      data: (notes) => notes,
+      loading: () => <NoteModel>[],
+      error: (_, __) => <NoteModel>[],
+    );
+
+    final searchResults =
+        query.isEmpty ? <NoteModel>[] : _search(allNotes, query);
 
     return Scaffold(
       appBar: AppBar(
         title: TextField(
           controller: _searchController,
           autofocus: true,
-          onChanged: _onSearch,
+          onChanged: (_) {
+            _saveRecentSearch(_searchController.text.trim());
+            setState(() {});
+          },
           style: GoogleFonts.dmSans(
             color: isDark ? AppTheme.textLight : AppTheme.textDark,
           ),
@@ -116,7 +129,6 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
             IconButton(
               onPressed: () {
                 _searchController.clear();
-                ref.read(notesProvider.notifier).clearSearch();
                 setState(() {});
               },
               icon: const Icon(Icons.clear_rounded),
@@ -125,7 +137,6 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
       ),
       body: Column(
         children: [
-          // ── Filter Chips ──
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
             child: SingleChildScrollView(
@@ -163,7 +174,6 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
             ),
           ),
 
-          // ── Content ──
           Expanded(
             child: _searchController.text.isEmpty
                 ? _buildRecentSearches(isDark)
@@ -237,20 +247,20 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 20),
             itemCount: _recentSearches.length,
             itemBuilder: (context, index) {
-              final query = _recentSearches[index];
+              final q = _recentSearches[index];
               return ListTile(
                 leading: Icon(Icons.history_rounded,
                     color: isDark
                         ? Colors.grey.shade500
                         : Colors.grey.shade400),
-                title: Text(query,
+                title: Text(q,
                     style: GoogleFonts.dmSans(
                       color:
                           isDark ? AppTheme.textLight : AppTheme.textDark,
                     )),
                 onTap: () {
-                  _searchController.text = query;
-                  _onSearch(query);
+                  _searchController.text = q;
+                  setState(() {});
                 },
                 contentPadding: EdgeInsets.zero,
               );
@@ -317,7 +327,10 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
         final note = filtered[index];
         return NoteCard(
           note: note,
-          onTap: () => context.push('/editor', extra: note),
+          onTap: () => context.push('/editor', extra: {
+                                'noteId': note.id,
+                                'folderId': note.folderId,
+                              }),
         );
       },
     );
