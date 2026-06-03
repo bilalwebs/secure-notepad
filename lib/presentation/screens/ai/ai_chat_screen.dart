@@ -26,37 +26,66 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> {
   final _scrollController = ScrollController();
   bool _isStreaming = false;
   String _streamingBuffer = '';
+  bool _welcomeAdded = false;
+  final List<ChatMessage> _messages = [];
+
+  List<ChatMessage> get _trimmedHistory => _messages.length > 20
+      ? _messages.sublist(_messages.length - 20)
+      : [..._messages];
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (widget.initialContext != null &&
-          widget.initialContext!.isNotEmpty) {
-        _addWelcomeWithContext();
-      } else {
-        _addWelcomeMessage();
+      if (!_welcomeAdded && mounted) {
+        _welcomeAdded = true;
+        // Don't clear messages here - let the guard in add functions handle it
+        if (widget.initialContext != null &&
+            widget.initialContext!.isNotEmpty) {
+          _addWelcomeWithContext();
+        } else {
+          _addWelcomeMessage();
+        }
       }
     });
   }
 
+  void _addMessage(ChatMessage message) {
+    setState(() {
+      _messages.add(message);
+    });
+  }
+
+  void _replaceLastMessage(ChatMessage message) {
+    if (_messages.isEmpty) return;
+    setState(() {
+      _messages[_messages.length - 1] = message;
+    });
+  }
+
   void _addWelcomeMessage() {
-    ref.read(chatHistoryProvider.notifier).addAssistantMessage(
-          'Hello! I\'m SecureNote AI, your intelligent note '
+    if (_messages.isNotEmpty) return;
+    _addMessage(ChatMessage(
+      role: 'assistant',
+      content: 'Hello! I\'m SecureNote AI, your intelligent note '
           'assistant crafted by Bilal Hussain. I can help you '
           'summarize notes, fix grammar, expand ideas, and '
           'create notes or folders. How can I help today?',
-        );
+      timestamp: DateTime.now(),
+    ));
   }
 
   void _addWelcomeWithContext() {
-    ref.read(chatHistoryProvider.notifier).addAssistantMessage(
-          'Hello! I\'m SecureNote AI by Bilal Hussain. '
+    if (_messages.isNotEmpty) return;
+    _addMessage(ChatMessage(
+      role: 'assistant',
+      content: 'Hello! I\'m SecureNote AI by Bilal Hussain. '
           'I can see you\'ve shared a note with me. '
           'Ask me to summarize, expand, fix, or improve it. '
           'I can also create new notes for you. '
           'What would you like to do?',
-        );
+      timestamp: DateTime.now(),
+    ));
   }
 
   Future<void> _sendMessage(String text) async {
@@ -72,11 +101,19 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> {
 
     // Check if user wants to create note/folder
     if (_detectCreateIntent(text)) {
-      await _handleCreateCommand(text, ai);
+      if (_isFolderCreation(text)) {
+        await _handleFolderCreate(text);
+      } else {
+        await _handleCreateCommand(text);
+      }
       return;
     }
 
-    ref.read(chatHistoryProvider.notifier).addUserMessage(text);
+    _addMessage(ChatMessage(
+      role: 'user',
+      content: text,
+      timestamp: DateTime.now(),
+    ));
     _scrollToBottom();
 
     setState(() {
@@ -84,27 +121,24 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> {
       _streamingBuffer = '';
     });
 
-    ref.read(chatHistoryProvider.notifier).addAssistantMessage('');
+    _addMessage(ChatMessage(
+      role: 'assistant',
+      content: '',
+      timestamp: DateTime.now(),
+    ));
 
-    final history =
-        ref.read(chatHistoryProvider.notifier).trimmedHistory;
+    final history = _trimmedHistory;
+    final inputHistory = history.length > 1
+        ? history.sublist(0, history.length - 1)
+        : <ChatMessage>[];
 
     try {
-      await for (final chunk
-          in ai.chatStream(history.sublist(0, history.length - 1), text)) {
+      await for (final chunk in ai.chatStream(inputHistory, text)) {
         if (!mounted) break;
         setState(() {
           _streamingBuffer += chunk;
         });
-        final current = ref.read(chatHistoryProvider);
-        final updated = [...current];
-        updated[updated.length - 1] = ChatMessage(
-          role: 'assistant',
-          content: _streamingBuffer,
-          timestamp: current.last.timestamp,
-        );
-        ref.read(chatHistoryProvider.notifier).replaceAll(updated);
-        _scrollToBottom();
+        _updateStreamingMessage(_streamingBuffer);
       }
     } finally {
       if (mounted) setState(() => _isStreaming = false);
@@ -117,104 +151,123 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> {
             lower.contains('make') ||
             lower.contains('add') ||
             lower.contains('new')) &&
-        (lower.contains('note') || lower.contains('folder'));
+        (lower.contains('note') || lower.contains('folder') || lower.contains('file'));
   }
 
-  Future<void> _handleCreateCommand(
-      String userText, AIService ai) async {
-    ref.read(chatHistoryProvider.notifier).addUserMessage(userText);
+  bool _isFolderCreation(String text) {
+    final lower = text.toLowerCase();
+    return lower.contains('folder') &&
+        (lower.contains('create') || lower.contains('make') ||
+         lower.contains('add') || lower.contains('new'));
+  }
+
+  Future<void> _handleCreateCommand(String userText) async {
+    // Add user message to chat
+    _addMessage(ChatMessage(
+      role: 'user',
+      content: userText,
+      timestamp: DateTime.now(),
+    ));
     _scrollToBottom();
 
-    setState(() {
-      _isStreaming = true;
-      _streamingBuffer = '';
-    });
+    // Parse DIRECTLY in Dart — no AI call for parsing
+    String title = 'Untitled';
+    String content = '';
 
-    ref.read(chatHistoryProvider.notifier).addAssistantMessage('');
+    // Extract title using multiple patterns
+    final titlePatterns = [
+      RegExp(r'(?:file|note|titled?)\s+(.+?)\s+(?:and|with|description)', caseSensitive: false),
+      RegExp(r'(?:file|note|titled?)\s+(.+)$', caseSensitive: false),
+      RegExp(r'create\s+(?:a\s+)?(?:file|note)\s+(.+?)\s+(?:and|with)', caseSensitive: false),
+    ];
 
-    final parsePrompt =
-        'The user wants to create a note or folder. '
-        'Extract the intent from this message: "$userText"\n\n'
-        'Respond in this EXACT JSON format only, no extra text:\n'
-        '{"type": "note" or "folder", "title": "...", '
-        '"content": "..." (for notes only)}\n'
-        'If you cannot determine, respond: {"type": "unknown"}';
-
-    final response = await ai.chat([], parsePrompt);
-
-    try {
-      final cleaned = response
-          .replaceAll('```json', '')
-          .replaceAll('```', '')
-          .trim();
-      final json = jsonDecode(cleaned);
-
-      if (json['type'] == 'note') {
-        final title = json['title'] ?? 'Untitled';
-        final content = json['content'] ?? '';
-        await _createNoteFromChat(title, content);
-        _updateStreamingMessage(
-            'Note created: **$title**\n'
-            'You can find it in Recent Notes on the home screen.');
-      } else if (json['type'] == 'folder') {
-        final name = json['title'] ?? 'New Folder';
-        await _createFolderFromChat(name);
-        _updateStreamingMessage(
-            'Folder created: **$name**\n'
-            'You can see it in the Folders section.');
-      } else {
-        await _sendToAI(userText, ai);
+    for (final pattern in titlePatterns) {
+      final match = pattern.firstMatch(userText);
+      if (match != null) {
+        title = match.group(1)?.trim() ?? 'Untitled';
+        break;
       }
-    } catch (_) {
-      await _sendToAI(userText, ai);
     }
-  }
 
-  Future<void> _sendToAI(String text, AIService ai) async {
-    final history =
-        ref.read(chatHistoryProvider.notifier).trimmedHistory;
-
-    // Reset the empty assistant message
-    final current = ref.read(chatHistoryProvider);
-    final updated = [...current];
-    updated[updated.length - 1] = ChatMessage(
-      role: 'assistant',
-      content: '',
-      timestamp: current.last.timestamp,
-    );
-    ref.read(chatHistoryProvider.notifier).replaceAll(updated);
-    _streamingBuffer = '';
-
-    await for (final chunk
-        in ai.chatStream(history.sublist(0, history.length - 1), text)) {
-      if (!mounted) break;
-      setState(() {
-        _streamingBuffer += chunk;
-      });
-      _updateStreamingMessage(_streamingBuffer);
+    // Extract description/content
+    final contentPatterns = [
+      RegExp(r'description\s+(.+)$', caseSensitive: false),
+      RegExp(r'(?:with|content|about)\s+(.+)$', caseSensitive: false),
+    ];
+    for (final pattern in contentPatterns) {
+      final match = pattern.firstMatch(userText);
+      if (match != null) {
+        content = match.group(1)?.trim() ?? '';
+        break;
+      }
     }
+
+    // If title still not found, use everything after "create/make/add a note/file"
+    if (title == 'Untitled') {
+      final fallback = RegExp(
+        r'(?:create|make|add)\s+(?:a\s+)?(?:note|file)\s+(.+)',
+        caseSensitive: false,
+      ).firstMatch(userText);
+      if (fallback != null) {
+        title = fallback.group(1)
+                ?.split(RegExp(r'\s+(?:and|with|description)\s+'))[0]
+                .trim() ??
+            'Untitled';
+      }
+    }
+
+    // Clean up title — remove common words
+    title = title
+        .replaceAll(RegExp(r'^(a|an|the)\s+', caseSensitive: false), '')
+        .trim();
+    if (title.isEmpty) title = 'Untitled';
+
+    // IMMEDIATELY create the note in Firestore
+    try {
+      await _createNoteFromChat(title, content);
+
+      // Confirm in chat
+      _addMessage(ChatMessage(
+        role: 'assistant',
+        content: '✅ Note created successfully!\n\n'
+            '📝 Title: **$title**\n'
+            '${content.isNotEmpty ? '📄 Content: $content\n\n' : ''}'
+            'Go to the home screen to see your new note.',
+        timestamp: DateTime.now(),
+      ));
+    } catch (e) {
+      _addMessage(ChatMessage(
+        role: 'assistant',
+        content: '❌ Failed to create note: $e\n'
+            'Please try again.',
+        timestamp: DateTime.now(),
+      ));
+    }
+    _scrollToBottom();
+    setState(() {});
   }
 
   void _updateStreamingMessage(String content) {
-    final current = ref.read(chatHistoryProvider);
-    final updated = [...current];
-    updated[updated.length - 1] = ChatMessage(
+    if (_messages.isEmpty) return;
+    _replaceLastMessage(ChatMessage(
       role: 'assistant',
       content: content,
-      timestamp: current.last.timestamp,
-    );
-    ref.read(chatHistoryProvider.notifier).replaceAll(updated);
+      timestamp: _messages.last.timestamp,
+    ));
     _scrollToBottom();
   }
 
   Future<void> _createNoteFromChat(
       String title, String content) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) return;
+    if (uid == null) throw Exception('Not logged in');
+
+    final plainContent = content.isEmpty ? ' ' : content;
     final deltaJson = jsonEncode(
-      (Document()..insert(0, content.isEmpty ? ' ' : content))
+      (Document()..insert(0, plainContent))
           .toDelta()
           .toJson());
+
     await FirebaseFirestore.instance
         .collection('users')
         .doc(uid)
@@ -224,7 +277,7 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> {
       'content': deltaJson,
       'isEncrypted': false,
       'cipherText': null,
-      'plainPreview': content.substring(0, min(80, content.length)),
+      'plainPreview': plainContent.substring(0, min(80, plainContent.length)),
       'isPinned': false,
       'folderId': null,
       'tags': <String>[],
@@ -247,6 +300,57 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> {
       'noteCount': 0,
       'createdAt': FieldValue.serverTimestamp(),
     });
+  }
+
+  Future<void> _handleFolderCreate(String userText) async {
+    _addMessage(ChatMessage(
+      role: 'user',
+      content: userText,
+      timestamp: DateTime.now(),
+    ));
+    _scrollToBottom();
+
+    setState(() {
+      _isStreaming = true;
+      _streamingBuffer = '';
+    });
+
+    _addMessage(ChatMessage(
+      role: 'assistant',
+      content: '',
+      timestamp: DateTime.now(),
+    ));
+
+    // Extract folder name using regex
+    final match = RegExp(
+      '(?:folder|directory)\\s+(?:named?|called?)?\\s*["\']?([^"\']+)',
+      caseSensitive: false,
+    ).firstMatch(userText);
+    String name = match?.group(1)?.trim() ?? 'New Folder';
+
+    // Clean up folder name
+    name = name
+        .replaceAll(RegExp(r'^(a|an|the)\s+', caseSensitive: false), '')
+        .trim();
+    if (name.isEmpty) name = 'New Folder';
+
+    try {
+      await _createFolderFromChat(name);
+      _updateStreamingMessage(
+        '✅ Folder created successfully!\n\n'
+        '📁 Folder name: **$name**\n\n'
+        'You can see it in the Folders section on the home screen.',
+      );
+    } catch (e) {
+      _updateStreamingMessage(
+        '❌ Failed to create folder: $e\n'
+        'Please try again.',
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isStreaming = false);
+      }
+    }
   }
 
   void _scrollToBottom() {
@@ -329,7 +433,7 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final messages = ref.watch(chatHistoryProvider);
+    final messages = _messages;
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Scaffold(
@@ -355,8 +459,18 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> {
             icon: const Icon(Icons.delete_sweep_outlined),
             tooltip: 'Clear chat',
             onPressed: () {
-              ref.read(chatHistoryProvider.notifier).clearHistory();
-              _addWelcomeMessage();
+              setState(() {
+                _messages.clear();
+                _welcomeAdded = true;
+                _messages.add(ChatMessage(
+                  role: 'assistant',
+                  content: 'Hello! I\'m SecureNote AI, your intelligent note '
+                      'assistant crafted by Bilal Hussain. I can help you '
+                      'summarize notes, fix grammar, expand ideas, and '
+                      'create notes or folders. How can I help today?',
+                  timestamp: DateTime.now(),
+                ));
+              });
             },
           ),
         ],
