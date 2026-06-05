@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:hive_flutter/hive_flutter.dart';
+// import 'package:hive_flutter/hive_flutter.dart';  // Temporarily disabled for APK build
 import 'package:secure_notepad/core/theme/app_theme.dart';
 import 'package:secure_notepad/data/models/note_model.dart';
 import 'package:secure_notepad/presentation/providers/notes_provider.dart';
@@ -19,7 +19,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
   final _searchController = TextEditingController();
   String _selectedFilter = 'All';
   List<String> _recentSearches = [];
-  late Box<String> _recentSearchBox;
+  // late Box<String> _recentSearchBox;  // Temporarily disabled for APK build
 
   @override
   void initState() {
@@ -28,10 +28,10 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
   }
 
   Future<void> _initRecentSearches() async {
-    _recentSearchBox = await Hive.openBox<String>('recent_searches');
-    setState(() {
-      _recentSearches = _recentSearchBox.values.toList().reversed.toList();
-    });
+    // _recentSearchBox = await Hive.openBox<String>('recent_searches');  // Temporarily disabled
+    // setState(() {
+    //   _recentSearches = _recentSearchBox.values.toList().reversed.toList();
+    // });
   }
 
   @override
@@ -41,25 +41,26 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
   }
 
   Future<void> _saveRecentSearch(String query) async {
-    _recentSearchBox.values
-        .where((q) => q == query)
-        .toList()
-        .forEach((q) {
-      final key = _recentSearchBox.keyAt(
-          _recentSearchBox.values.toList().indexOf(q));
-      if (key != null) _recentSearchBox.delete(key);
-    });
-    await _recentSearchBox.add(query);
-    if (_recentSearchBox.length > 10) {
-      await _recentSearchBox.deleteAt(0);
-    }
-    setState(() {
-      _recentSearches = _recentSearchBox.values.toList().reversed.toList();
-    });
+    // Temporarily disabled for APK build - recent searches won't persist
+    // _recentSearchBox.values
+    //     .where((q) => q == query)
+    //     .toList()
+    //     .forEach((q) {
+    //   final key = _recentSearchBox.keyAt(
+    //       _recentSearchBox.values.toList().indexOf(q));
+    //   if (key != null) _recentSearchBox.delete(key);
+    // });
+    // await _recentSearchBox.add(query);
+    // if (_recentSearchBox.length > 10) {
+    //   await _recentSearchBox.deleteAt(0);
+    // }
+    // setState(() {
+    //   _recentSearches = _recentSearchBox.values.toList().reversed.toList();
+    // });
   }
 
   Future<void> _clearRecentSearches() async {
-    await _recentSearchBox.clear();
+    // await _recentSearchBox.clear();  // Temporarily disabled
     setState(() => _recentSearches = []);
   }
 

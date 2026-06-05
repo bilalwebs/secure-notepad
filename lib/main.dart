@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_quill/flutter_quill.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:hive_flutter/hive_flutter.dart';
+// import 'package:hive_flutter/hive_flutter.dart';  // Temporarily disabled for APK build
 import 'package:timezone/data/latest.dart' as tz;
 import 'package:secure_notepad/firebase_options.dart';
 import 'package:secure_notepad/core/encryption/maze_card_cipher.dart';
@@ -21,7 +21,7 @@ Future<void> main() async {
     options: DefaultFirebaseOptions.currentPlatform,
   );
 
-  await Hive.initFlutter();
+  // await Hive.initFlutter();  // Temporarily disabled for APK build
 
   tz.initializeTimeZones();
 
